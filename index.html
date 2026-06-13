@@ -237,7 +237,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);
 
 <script type="module">
 // ═══════════════════════════════════════════════════
-// CLOUDBASE INTEGRATION
+// CLOUDBASE INTEGRATION WITH DUAL-SYNC
 // ═══════════════════════════════════════════════════
 
 let db = null;
@@ -249,6 +249,19 @@ let localDrawSettings = {
   specialRate: 0.05,
   showMainResetBtn: false
 };
+
+// 1. 頁面加載時，立即從本地緩存恢復數據，防止因雲端連線延遲造成的 UI 閃爍與重置
+try {
+  const cached = localStorage.getItem('draw_settings_v3');
+  if (cached) {
+    const parsed = JSON.parse(cached);
+    if (parsed.normalRate !== undefined) {
+      localDrawSettings.normalRate = Number(parsed.normalRate);
+      localDrawSettings.specialRate = Number(parsed.specialRate);
+      localDrawSettings.showMainResetBtn = !!parsed.showMainResetBtn;
+    }
+  }
+} catch (e) {}
 
 // 安全初始化 - 防錯處理，避免 CloudBase 初始化失敗卡死畫面
 try {
@@ -270,12 +283,20 @@ try {
   const watcher = settingsDocRef.watch({
     onChange: (snapshot) => {
       if (snapshot.docs && snapshot.docs.length > 0) {
-        const data = snapshot.docs[0];
-        localDrawSettings.normalRate = Number(data.normalRate);
-        localDrawSettings.specialRate = Number(data.specialRate);
-        localDrawSettings.showMainResetBtn = !!data.showMainResetBtn;
-        updateUIState();
-        updateAdminUI();
+        // 兼容可能存在的 data 包裝，或是平鋪結構
+        const docData = snapshot.docs[0].data || snapshot.docs[0];
+        
+        if (docData.normalRate !== undefined) {
+          localDrawSettings.normalRate = Number(docData.normalRate);
+          localDrawSettings.specialRate = Number(docData.specialRate);
+          localDrawSettings.showMainResetBtn = !!docData.showMainResetBtn;
+          
+          // 每次雲端有更新，同步備份到本地
+          try { localStorage.setItem('draw_settings_v3', JSON.stringify(localDrawSettings)); } catch(e) {}
+          
+          updateUIState();
+          updateAdminUI();
+        }
       }
     },
     onError: (err) => {
@@ -514,7 +535,7 @@ function updateAdminUI() {
   }
 }
 
-// 修改概率並保存 (雲端)
+// 修改概率並保存 (雲端+本地雙寫)
 window.setNormalRate = async function(rate) {
   localDrawSettings.normalRate = rate;
   updateUIState();
@@ -540,26 +561,21 @@ window.toggleMainResetBtn = async function() {
 };
 
 async function persistSettings() {
+  // 永遠先在本地備份一份，確保下次刷新時能秒讀，防丟失
+  try {
+    localStorage.setItem('draw_settings_v3', JSON.stringify(localDrawSettings));
+  } catch (e) {}
+
   if (isCloudSynced && db) {
     try {
-      await db.collection('drawSettings').doc('settings').update({
+      // 統一使用 .set() 方法：存在則覆寫，不存在則自動建立，最為穩定
+      await db.collection('drawSettings').doc('settings').set({
         normalRate: localDrawSettings.normalRate,
         specialRate: localDrawSettings.specialRate,
         showMainResetBtn: localDrawSettings.showMainResetBtn
       });
     } catch (err) {
-      console.error("Update failed:", err);
-      // 如果更新失敗，嘗試創建文檔
-      try {
-        await db.collection('drawSettings').add({
-          _id: 'settings',
-          normalRate: localDrawSettings.normalRate,
-          specialRate: localDrawSettings.specialRate,
-          showMainResetBtn: localDrawSettings.showMainResetBtn
-        });
-      } catch (e) {
-        console.error("Create failed:", e);
-      }
+      console.error("CloudBase save failed:", err);
     }
   }
 }
