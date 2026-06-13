@@ -263,54 +263,65 @@ try {
   }
 } catch (e) {}
 
-// 安全初始化 - 防錯處理，避免 CloudBase 初始化失敗卡死畫面
+// 安全初始化 - 包含強制匿名登入
 try {
   const app = cloudbase.init({
     env: 'jntm-d5gih0h1z9c62a234'
   });
 
+  const auth = app.auth({ persistence: 'local' });
   db = app.database();
-  isCloudSynced = true;
 
-  // 同步狀態顯示
-  const syncIndicator = document.getElementById('sync-status-indicator');
-  if (syncIndicator) {
-    syncIndicator.innerText = `[ MODE: SECURE REALTIME CLOUD | ENVID: jntm-d5gih0h1z9c62a234 ]`;
-  }
+  // ⚠️ 必須先獲取匿名身份，才能連線資料庫
+  auth.anonymousAuthProvider().signIn().then(() => {
+    isCloudSynced = true;
+    
+    // 登入成功後，亮起連線指示燈
+    const syncIndicator = document.getElementById('sync-status-indicator');
+    if (syncIndicator) {
+      syncIndicator.innerText = `[ MODE: SECURE REALTIME CLOUD | ENVID: jntm-d5gih0h1z9c62a234 ]`;
+    }
 
-  // 監聽雲端概率變化
-  const settingsDocRef = db.collection('drawSettings').doc('settings');
-  const watcher = settingsDocRef.watch({
-    onChange: (snapshot) => {
-      if (snapshot.docs && snapshot.docs.length > 0) {
-        // 兼容可能存在的 data 包裝，或是平鋪結構
-        const docData = snapshot.docs[0].data || snapshot.docs[0];
-        
-        if (docData.normalRate !== undefined) {
-          localDrawSettings.normalRate = Number(docData.normalRate);
-          localDrawSettings.specialRate = Number(docData.specialRate);
-          localDrawSettings.showMainResetBtn = !!docData.showMainResetBtn;
+    // 監聽雲端概率變化
+    const settingsDocRef = db.collection('drawSettings').doc('settings');
+    settingsDocRef.watch({
+      onChange: (snapshot) => {
+        if (snapshot.docs && snapshot.docs.length > 0) {
+          const docData = snapshot.docs[0].data || snapshot.docs[0];
           
-          // 每次雲端有更新，同步備份到本地
-          try { localStorage.setItem('draw_settings_v3', JSON.stringify(localDrawSettings)); } catch(e) {}
-          
-          updateUIState();
-          updateAdminUI();
+          if (docData.normalRate !== undefined) {
+            localDrawSettings.normalRate = Number(docData.normalRate);
+            localDrawSettings.specialRate = Number(docData.specialRate);
+            localDrawSettings.showMainResetBtn = !!docData.showMainResetBtn;
+            
+            try { localStorage.setItem('draw_settings_v3', JSON.stringify(localDrawSettings)); } catch(e) {}
+            
+            updateUIState();
+            updateAdminUI();
+          }
+        }
+      },
+      onError: (err) => {
+        console.error("CloudBase watch error: ", err);
+        isCloudSynced = false;
+        const syncIndicator = document.getElementById('sync-status-indicator');
+        if (syncIndicator) {
+          syncIndicator.innerText = `[ MODE: FALLBACK LOCAL MODE ]`;
         }
       }
-    },
-    onError: (err) => {
-      console.error("CloudBase watch error: ", err);
-      isCloudSynced = false;
-      const syncIndicator = document.getElementById('sync-status-indicator');
-      if (syncIndicator) {
-        syncIndicator.innerText = `[ MODE: FALLBACK LOCAL MODE ]`;
-      }
+    });
+
+  }).catch((err) => {
+    console.warn("匿名登入失敗，退回單機模式: ", err);
+    isCloudSynced = false;
+    const syncIndicator = document.getElementById('sync-status-indicator');
+    if (syncIndicator) {
+      syncIndicator.innerText = `[ MODE: STANDALONE LOCAL OFFLINE ]`;
     }
   });
 
 } catch (e) {
-  console.warn("CloudBase initialization blocked or failed. Running in pure offline mode.", e);
+  console.warn("CloudBase initialization failed. Running in pure offline mode.", e);
   const syncIndicator = document.getElementById('sync-status-indicator');
   if (syncIndicator) {
     syncIndicator.innerText = `[ MODE: STANDALONE LOCAL OFFLINE ]`;
